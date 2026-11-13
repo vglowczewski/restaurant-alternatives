@@ -14,7 +14,7 @@ import pandas as pd
 from rapidfuzz import fuzz, process
 
 FUZZY_LIMIT = 5
-FUZZY_CUTOFF = 60  # below this a name is not even suggested
+FUZZY_CUTOFF = 70  # below this a name is not even suggested
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 

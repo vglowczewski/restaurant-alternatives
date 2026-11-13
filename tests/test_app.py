@@ -35,6 +35,6 @@ def test_app_local_mode_end_to_end(local_mode):
 
 def test_app_no_match_empty_state(local_mode):
     at = AppTest.from_file(APP, default_timeout=60).run()
-    at.text_input(key="query").input("!!!").run()
+    at.text_input(key="query").input("zzqqxxj").run()
     assert not at.exception
     assert any("No restaurants in Manhattan match" in str(i.value) for i in at.info)
