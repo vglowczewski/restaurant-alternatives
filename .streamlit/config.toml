@@ -1,11 +1,15 @@
 [theme]
 base = "light"
-primaryColor = "#E4572E"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F6F7F9"
-textColor = "#1F2933"
-font = "sans serif"
-baseRadius = "medium"
+primaryColor = "#B9D9EB"
+backgroundColor = "#EAF4FA"
+secondaryBackgroundColor = "#F6FAFD"
+textColor = "#1B2A41"
+borderColor = "#D3E5F0"
+font = "Poppins:https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&display=swap, sans-serif"
+baseRadius = "16px"
+
+[client]
+toolbarMode = "minimal"
 
 [browser]
 gatherUsageStats = false

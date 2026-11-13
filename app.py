@@ -1,46 +1,37 @@
-"""Streamlit UI: name search -> confirm reference -> filters -> Find alternatives.
+"""Streamlit UI: name search -> confirm reference -> preferences -> Find alternatives.
 
 Yelp is called only inside the "Find alternatives" click handler (never on
 keystrokes or reruns). Results are kept in session_state so reruns redraw them
 without new calls. @st.cache_resource is used only for the directory and the
 DB connection; Yelp data is never cached by Streamlit.
+Presentation (CSS, chips, icons) lives in ui/styles.py.
 """
 from __future__ import annotations
 
-import html
 import io
+import re
 import sqlite3
 import tempfile
 from pathlib import Path
 
 import pandas as pd
+import pydeck as pdk
 import streamlit as st
 
 import data_store as ds
 import recommender as rec
 import yelp_client as yc
 from name_matching import NameMatcher
+from ui import styles as ui
+from ui.styles import chip, esc
 
 PRICE_LABELS = {1: "$", 2: "$$", 3: "$$$", 4: "$$$$"}
+LOCAL_MODE_TIP = ("Ratings, review counts and price come from Yelp. Without Yelp, alternatives "
+                  "are ranked on cuisine and distance only.")
 
-st.set_page_config(page_title="Manhattan Restaurant Alternatives", page_icon="🍽️", layout="wide")
-
-# Minimal styling: badges, the muted evidence line and the header subtitle.
-st.markdown(
-    """
-<style>
-.app-subtitle { color: #52606D; margin-top: -0.75rem; margin-bottom: 1.25rem; }
-.badge { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px;
-         font-size: 0.75rem; font-weight: 600; vertical-align: middle; margin-left: 0.4rem; }
-.badge-same { background: #E3F4EA; color: #1E7B45; }
-.badge-related { background: #FFF1E0; color: #A85A00; }
-.card-title { font-size: 1.05rem; font-weight: 600; }
-.card-address { color: #616E7C; font-size: 0.85rem; }
-.evidence { color: #616E7C; font-size: 0.8rem; margin-top: 0.25rem; }
-</style>
-""",
-    unsafe_allow_html=True,
-)
+st.set_page_config(page_title="Manhattan Restaurant Alternatives", page_icon="🍽️",
+                   layout="wide", initial_sidebar_state="collapsed")
+st.markdown(ui.CSS, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------- resources
@@ -67,85 +58,115 @@ def get_client(conn) -> yc.YelpClient:
     return st.session_state.yelp_client
 
 
-def fmt_missing(v, fmt=str, unknown="unavailable"):
-    if v is None or (isinstance(v, float) and pd.isna(v)):
-        return unknown
-    return fmt(v)
+def known(v) -> bool:
+    return not (v is None or (isinstance(v, float) and pd.isna(v)))
 
 
-def esc(v) -> str:
-    return html.escape(str(v))
+def md_safe(text) -> str:
+    """Escape Markdown control characters for widget labels."""
+    return re.sub(r"([\\*_\[\]`#<>|~])", r"\\\1", str(text))
 
 
-# ---------------------------------------------------------------- Yelp status
+# ---------------------------------------------------------------- small UI pieces
+
+def step(n: int, title: str) -> None:
+    st.markdown(f"<div class='ra-step'><span class='ra-step-num'>{n}</span>"
+                f"<span class='ra-step-title'>{esc(title)}</span></div>", unsafe_allow_html=True)
+
+
+def card(body_html: str, left_html: str = "", static: bool = True) -> None:
+    cls = "ra-card ra-card-static" if static else "ra-card"
+    st.markdown(f"<div class='{cls}'>{left_html}<div class='ra-body'>{body_html}</div></div>",
+                unsafe_allow_html=True)
+
+
+def empty_state(icon: str, title: str, suggestion: str) -> None:
+    card(f"<div class='ra-name'>{esc(title)}</div><div class='ra-why'>{esc(suggestion)}</div>",
+         f"<span class='ra-circle ra-icon'>{icon}</span>")
+
+
+def mode_badge(yelp_ready: bool, reason: str | None) -> str:
+    if yelp_ready:
+        return ("<span class='ra-mode ra-mode-on' title='Ratings, reviews and price are fetched from "
+                "Yelp when you click Find alternatives.'>● Yelp data on</span>")
+    return f"<span class='ra-mode' title='{esc(reason or '')} {esc(LOCAL_MODE_TIP)}'>○ Local data mode ⓘ</span>"
+
+
+# ---------------------------------------------------------------- Yelp status / sidebar
 
 def yelp_status(client: yc.YelpClient) -> tuple[bool, str | None]:
     """(yelp_ready, reason_if_not)."""
     s = client.settings
     if not s.api_key or s.api_key.startswith("your-"):
-        return False, "No Yelp API key is configured, so the app runs on local data only."
+        return False, "No Yelp API key is configured."
     if not s.enabled:
-        return False, "Yelp is disabled (YELP_ENABLED=false), so the app runs on local data only."
+        return False, "Yelp is switched off (YELP_ENABLED=false)."
     if client.budget_used_up():
-        return False, f"{yc.BUDGET_USED_UP_MESSAGE}. The app runs on local data only."
+        return False, f"{yc.BUDGET_USED_UP_MESSAGE}."
     return True, None
 
 
 def data_sources_panel(conn, client: yc.YelpClient, yelp_ready: bool, reason: str | None) -> None:
     s = client.settings
-    with st.sidebar.expander("Data sources & Yelp", expanded=False):
-        st.write("**Directory:** NYC DOHMH Restaurant Inspection Results (Manhattan).")
-        if reason:
-            st.warning(f"Yelp: off. {reason}")
-        else:
-            st.success("Yelp: on (called only when you click Find alternatives).")
+    with st.sidebar:
+        st.markdown("### Data sources")
+        st.markdown(mode_badge(yelp_ready, reason), unsafe_allow_html=True)
+        st.caption("Directory: NYC DOHMH Restaurant Inspection Results (Manhattan)." +
+                   ("" if yelp_ready else f" {reason} {LOCAL_MODE_TIP}"))
         st.caption(
             f"Yelp calls — this session: {client.session_calls}; "
             f"today (UTC): {ds.get_daily_calls(conn)}/{s.daily_limit}; "
             f"total: {ds.get_total_calls(conn)}/{s.total_limit}."
         )
-        st.markdown("**Yelp ID mappings**")
-        buf = io.StringIO()
-        rows = conn.execute("SELECT nyc_id, yelp_id, matched_at, method FROM mappings ORDER BY nyc_id").fetchall()
-        pd.DataFrame([tuple(r) for r in rows], columns=ds.MAPPING_COLUMNS).to_csv(buf, index=False)
-        st.download_button("Export mappings CSV", buf.getvalue(), "mappings.csv", "text/csv")
-        up = st.file_uploader("Import mappings CSV", type="csv")
-        if up is not None and st.button("Import"):
-            tmp = Path(tempfile.gettempdir()) / "mappings_import.csv"
-            tmp.write_bytes(up.getvalue())
-            try:
-                n = ds.import_mappings_csv(conn, tmp)
-                st.success(f"Imported {n} mappings.")
-            except ValueError as e:
-                st.error(str(e))
-            finally:
-                tmp.unlink(missing_ok=True)
+        with st.expander("Yelp ID mappings"):
+            buf = io.StringIO()
+            rows = conn.execute("SELECT nyc_id, yelp_id, matched_at, method FROM mappings ORDER BY nyc_id").fetchall()
+            pd.DataFrame([tuple(r) for r in rows], columns=ds.MAPPING_COLUMNS).to_csv(buf, index=False)
+            st.download_button("Export mappings CSV", buf.getvalue(), "mappings.csv", "text/csv")
+            up = st.file_uploader("Import mappings CSV", type="csv")
+            if up is not None and st.button("Import"):
+                tmp = Path(tempfile.gettempdir()) / "mappings_import.csv"
+                tmp.write_bytes(up.getvalue())
+                try:
+                    n = ds.import_mappings_csv(conn, tmp)
+                    st.success(f"Imported {n} mappings.")
+                except ValueError as e:
+                    st.error(str(e))
+                finally:
+                    tmp.unlink(missing_ok=True)
 
 
-# ---------------------------------------------------------------- reference
+# ---------------------------------------------------------------- step 1: reference
 
 def choose_reference(matcher: NameMatcher) -> dict | None:
-    query = st.text_input("Restaurant name (Manhattan)", placeholder="e.g. Don Angie", key="query")
+    step(1, "Find your restaurant")
+    query = st.text_input("Restaurant name", placeholder="e.g. Don Angie", key="query",
+                          label_visibility="collapsed")
     if not query.strip():
         st.session_state.pop("reference_id", None)
-        st.caption("Start by typing the name of a Manhattan restaurant you like.")
+        st.caption("Type the name of a Manhattan restaurant you like. Small typos are fine.")
         return None
 
     match = matcher.match(query)
     if match.is_empty:
-        st.info(match.message)
+        st.info(f"{match.message} Tip: leave out words like “NYC” or “restaurant”.", icon="🔎")
         st.session_state.pop("reference_id", None)
         return None
 
-    st.write(match.message)
-    labels = [f"{c.label} ({c.cuisine})" for c in match.candidates]
+    st.caption(match.message)
     ids = [c.nyc_id for c in match.candidates]
+    labels = [
+        f"**{md_safe(c.name)}** · {md_safe(c.address)}, {md_safe(c.zip)}  "
+        f":blue-background[{md_safe(c.cuisine or 'cuisine not specified')}]"
+        for c in match.candidates
+    ]
     # only a single exact/alias hit is pre-selected; fuzzy hits and branches never are
-    choice = st.radio(
-        "Choose the restaurant", range(len(ids)), format_func=lambda i: labels[i],
-        index=None if match.needs_choice else 0, key=f"choice::{match.query}",
-        label_visibility="collapsed",
-    )
+    with st.container(key="match-cards"):
+        choice = st.radio(
+            "Choose the restaurant", range(len(ids)), format_func=lambda i: labels[i],
+            index=None if match.needs_choice else 0, key=f"choice::{match.query}",
+            label_visibility="collapsed",
+        )
     if choice is None:
         st.session_state.pop("reference_id", None)
         return None
@@ -158,44 +179,55 @@ def choose_reference(matcher: NameMatcher) -> dict | None:
 
 
 def show_reference(row: dict) -> None:
-    with st.container(border=True):
-        st.markdown(
-            f"<div class='card-title'>Reference: {esc(row['name'])}</div>"
-            f"<div class='card-address'>{esc(row['address'])}, {esc(row['zip'])}</div>"
-            f"<div class='evidence'>Cuisine: {esc(row['cuisine'] or 'not specified')} · "
-            f"Family: {esc(row['cuisine_family'] or 'not specified')}</div>",
-            unsafe_allow_html=True,
-        )
+    chips = (chip(row["cuisine"] or "cuisine not specified", "blue") +
+             chip(row["cuisine_family"] or "family not specified", "yellow"))
+    card(
+        "<div class='ra-kicker'>Your reference</div>"
+        f"<div class='ra-name'>{esc(row['name'])}</div>"
+        f"<div class='ra-address'>{esc(row['address'])}, {esc(row['zip'])}</div>"
+        f"<div class='ra-chips'>{chips}</div>",
+        f"<span class='ra-circle ra-icon'>{ui.icon_for(row['cuisine_family'])}</span>",
+    )
 
 
-# ---------------------------------------------------------------- filters (sidebar)
+# ---------------------------------------------------------------- step 2: preferences
 
-def filter_form(directory: pd.DataFrame, ref: dict, yelp_ready: bool, yelp_reason: str | None):
-    """Rendered in the sidebar. Returns Filters when Find alternatives is clicked, else None."""
-    family = directory[directory["cuisine_family"] == ref["cuisine_family"]]["cuisine"]
-    cuisines = sorted(set(family))
-    with st.sidebar:
-        st.header("Filters")
+def preferences(directory: pd.DataFrame, ref: dict, yelp_ready: bool, yelp_reason: str | None):
+    """Returns Filters when Find alternatives is clicked, else None."""
+    step(2, "Set preferences")
+    cuisines = sorted(set(directory[directory["cuisine_family"] == ref["cuisine_family"]]["cuisine"]))
+    off = not yelp_ready
+    with st.container(key="prefs"):
+        st.markdown(mode_badge(yelp_ready, yelp_reason), unsafe_allow_html=True)
         with st.form("filters", border=False):
-            st.markdown("**Cuisine & distance**")
-            cuisine = st.selectbox(
-                "Required cuisine (optional)", ["Any"] + cuisines,
-                help="Only cuisines in the same family as your reference can be similar.",
-            )
-            use_distance = st.checkbox("Limit distance")
-            max_km = st.slider("Max distance (km)", 0.5, 15.0, 3.0, 0.5)
-
-            st.markdown("**Rating, reviews & price** (Yelp)")
-            if not yelp_ready:
-                st.info(f"These filters are disabled: {yelp_reason}")
-            min_rating = st.slider("Minimum rating", 1.0, 5.0, 4.0, 0.5, disabled=not yelp_ready)
-            min_reviews = st.number_input("Minimum reviews", 0, 100000, 20, 5, disabled=not yelp_ready)
-            use_ratio = st.checkbox("Limit reviews relative to the reference", True, disabled=not yelp_ready)
-            ratio_pct = st.slider("Max reviews (% of reference)", 5, 200, 50, 5, disabled=not yelp_ready)
-            abs_max = st.number_input("Absolute max reviews (optional)", min_value=1, value=None,
-                                      placeholder="No limit", disabled=not yelp_ready)
-            price = st.selectbox("Price cap", ["Any", "$", "$$", "$$$", "$$$$"], disabled=not yelp_ready)
-            clicked = st.form_submit_button("Find alternatives", type="primary", width="stretch")
+            left, right = st.columns(2, gap="large")
+            with left:
+                st.markdown("<div class='ra-group'>Cuisine & distance</div>", unsafe_allow_html=True)
+                cuisine = st.selectbox(
+                    "Cuisine", ["Any"] + cuisines,
+                    help="Only cuisines in the same family as your reference can be similar.")
+                use_distance = st.checkbox("Limit distance", help="Only show places within the distance below.")
+                max_km = st.slider("Max distance (km)", 0.5, 15.0, 3.0, 0.5,
+                                   help="Straight-line distance from your reference. Used only if 'Limit distance' is on.")
+            with right:
+                st.markdown("<div class='ra-group'>Rating, reviews & price</div>", unsafe_allow_html=True)
+                if off:
+                    st.markdown("<p class='ra-note'>Needs Yelp data — not available right now.</p>",
+                                unsafe_allow_html=True)
+                min_rating = st.slider("Min rating", 1.0, 5.0, 4.0, 0.5, disabled=off,
+                                       help="Lowest Yelp star rating to include.")
+                min_reviews = st.number_input("Min reviews", 0, 100000, 20, 5, disabled=off,
+                                              help="Fewest Yelp reviews a place must have.")
+                use_ratio = st.checkbox("Limit reviews vs. reference", True, disabled=off,
+                                        help="Favour lesser-known places: cap reviews at a share of your reference's count.")
+                ratio_pct = st.slider("Max reviews vs. reference (%)", 5, 200, 50, 5, disabled=off,
+                                      help="50% = at most half as many reviews as your reference.")
+                abs_max = st.number_input("Max reviews (absolute)", min_value=1, value=None,
+                                          placeholder="No limit", disabled=off,
+                                          help="Optional hard cap on the number of reviews.")
+                price = st.selectbox("Price cap", ["Any", "$", "$$", "$$$", "$$$$"], disabled=off,
+                                     help="Most expensive Yelp price level to include.")
+            clicked = st.form_submit_button("Find alternatives", type="primary")
     if not clicked:
         return None
     return rec.Filters(
@@ -209,81 +241,124 @@ def filter_form(directory: pd.DataFrame, ref: dict, yelp_ready: bool, yelp_reaso
     )
 
 
-# ---------------------------------------------------------------- results
+# ---------------------------------------------------------------- step 3: results
 
 def result_card(i: int, c: dict, yelp_available: bool) -> None:
     same = c["similarity_score"] == rec.SAME_CUISINE
-    badge = f"<span class='badge {'badge-same' if same else 'badge-related'}'>{esc(c['shared_cuisine_label'])}</span>"
-    if not yelp_available:
-        freshness = "Yelp data unavailable"
-    elif c.get("data_fetched_at"):
-        freshness = f"Yelp data fetched {c['data_fetched_at'][:16].replace('T', ' ')} UTC"
-    else:
-        freshness = f"Yelp: {yc.NOT_ENRICHED}"
-    evidence = " · ".join([
-        fmt_missing(c["distance_km"], lambda v: f"{v:.2f} km", "distance unknown"),
-        esc(c["cuisine"]),
-        freshness,
-    ])
-    yelp_line = ""
+    badge = chip("Same cuisine" if same else "Related cuisine", "blue" if same else "yellow")
+    chips = []
+    if known(c["distance_km"]):
+        chips.append(chip(f"📍 {c['distance_km']:.1f} km"))
+    chips.append(chip(c["cuisine"]))
     if yelp_available and c.get("enriched"):
-        yelp_line = "<div class='evidence'>" + " · ".join([
-            "rating " + fmt_missing(c["rating"], lambda v: f"{v:g}"),
-            fmt_missing(c["review_count"], lambda v: f"{int(v):,}", "unknown") + " reviews",
-            "price " + fmt_missing(c["price_level"], lambda v: PRICE_LABELS.get(int(v), "unavailable")),
-        ]) + "</div>"
-    with st.container(border=True):
-        st.markdown(
-            f"<div class='card-title'>{i}. {esc(c['name'])}{badge}</div>"
-            f"<div class='card-address'>{esc(c['address'])}, {esc(c['zip'])}</div>",
-            unsafe_allow_html=True,
-        )
-        st.write(c["explanation"])
-        st.markdown(f"<div class='evidence'>{evidence}</div>{yelp_line}", unsafe_allow_html=True)
+        if known(c["rating"]):
+            chips.append(chip(f"★ {c['rating']:g}"))
+        if known(c["review_count"]):
+            chips.append(chip(f"{int(c['review_count']):,} reviews"))
+        if known(c["price_level"]):
+            chips.append(chip(PRICE_LABELS.get(int(c["price_level"]), "price n/a")))
+    if not yelp_available:
+        chips.append(chip("Local data", "muted"))
+    elif c.get("data_fetched_at"):
+        chips.append(chip(f"Yelp · {c['data_fetched_at'][:16].replace('T', ' ')} UTC", "muted"))
+    else:
+        chips.append(chip(f"Yelp {yc.NOT_ENRICHED}", "muted"))
+    left = (f"<div style='display:flex;flex-direction:column;gap:0.4rem;align-items:center'>"
+            f"<span class='ra-circle ra-rank'>{i}</span>"
+            f"<span class='ra-circle ra-icon' title='{esc(c['cuisine_family'])}'>{ui.icon_for(c['cuisine_family'])}</span></div>")
+    card(
+        f"<div><span class='ra-name'>{esc(c['name'])}</span>{badge}</div>"
+        f"<div class='ra-address'>{esc(c['address'])}, {esc(c['zip'])}</div>"
+        f"<div class='ra-chips'>{''.join(chips)}</div>"
+        f"<div class='ra-why'><b>Why it matches:</b> {esc(c['explanation'])}</div>",
+        left, static=False,
+    )
 
 
 def show_map(ref: dict, results: list[dict]) -> None:
-    points = [{"lat": c["lat"], "lon": c["lon"], "color": "#1F6FEB", "size": 40}
-              for c in results if c.get("lat") is not None and c.get("lon") is not None]
-    if not pd.isna(ref.get("lat")) and not pd.isna(ref.get("lon")):
-        points.append({"lat": ref["lat"], "lon": ref["lon"], "color": "#E4572E", "size": 70})
-    if points:
-        st.map(pd.DataFrame(points), latitude="lat", longitude="lon", color="color", size="size")
-        st.caption("Orange: your reference. Blue: alternatives. Restaurants without coordinates are not shown.")
+    points = [{"lat": c["lat"], "lon": c["lon"], "label": f"{i}. {c['name']}",
+               "fill": [62, 127, 174, 220], "radius": 7}
+              for i, c in enumerate(results, 1) if known(c.get("lat")) and known(c.get("lon"))]
+    if known(ref.get("lat")) and known(ref.get("lon")):
+        points.append({"lat": ref["lat"], "lon": ref["lon"], "label": f"Your reference: {ref['name']}",
+                       "fill": [245, 200, 66, 255], "radius": 11})
+    if not points:
+        empty_state("🗺️", "No map for these results", "None of these restaurants has coordinates in the city data.")
+        return
+    df = pd.DataFrame(points)
+    span = max(df["lat"].max() - df["lat"].min(), df["lon"].max() - df["lon"].min())
+    zoom = 14 if span < 0.01 else 13 if span < 0.03 else 12 if span < 0.07 else 11
+    layer = pdk.Layer(
+        "ScatterplotLayer", df, get_position="[lon, lat]", get_fill_color="fill", get_radius="radius",
+        radius_units="pixels", stroked=True, get_line_color=[27, 42, 65, 200], line_width_min_pixels=1,
+        pickable=True,
+    )
+    deck = pdk.Deck(
+        layers=[layer], map_provider="carto", map_style="light",
+        initial_view_state=pdk.ViewState(latitude=float(df["lat"].mean()), longitude=float(df["lon"].mean()), zoom=zoom),
+        tooltip={"text": "{label}"},
+    )
+    st.pydeck_chart(deck, height=440)
+    st.caption("Yellow: your reference · Blue: alternatives. Places without coordinates are not shown.")
+
+
+def _fmt_applied(key: str, v) -> str | None:
+    names = {"required_cuisine": "Cuisine", "max_distance_km": "Max distance", "yelp_filters": "Yelp filters",
+             "min_rating": "Min rating", "min_reviews": "Min reviews",
+             "effective_max_reviews": "Max reviews", "price_cap": "Price cap"}
+    if v is None:
+        val = "any"
+    elif key == "max_distance_km":
+        val = f"{v:g} km"
+    elif key == "price_cap":
+        val = PRICE_LABELS.get(int(v), str(v))
+    elif key == "min_rating":
+        val = f"{v:g}★"
     else:
-        st.info("Map unavailable: none of these restaurants has coordinates.")
+        val = str(v)
+    return f"{names.get(key, key)}: {val}"
 
 
 def show_applied(result: rec.RecommendationResult) -> None:
-    with st.expander("Filters actually applied"):
-        rows = [{"Filter": k, "Value": "not set" if v is None else str(v)}
-                for k, v in result.filters_applied.items()]
-        st.table(pd.DataFrame(rows))
-        if result.results:
-            st.write("**Ranking tiers used:** " + ", ".join(result.results[0]["tiers_used"]))
-            skipped = result.results[0]["tiers_skipped"]
-            if skipped:
-                st.write("**Tiers skipped:** " + "; ".join(f"{k} ({v})" for k, v in skipped.items()))
+    chips = [chip(_fmt_applied(k, v)) for k, v in result.filters_applied.items()]
+    if result.results and result.results[0]["tiers_skipped"]:
+        chips += [chip(f"Ranking skips {k.replace('_', ' ')} ({v})", "muted")
+                  for k, v in result.results[0]["tiers_skipped"].items()]
+    st.markdown("<div class='ra-kicker' style='margin:0.6rem 0 0.35rem'>Filters applied</div>"
+                f"<div class='ra-chips'>{''.join(chips)}</div>", unsafe_allow_html=True)
+
+
+def show_notices(result: rec.RecommendationResult) -> None:
+    notices = [n for n in dict.fromkeys(result.notices)
+               if n != rec.YELP_FILTERS_DISABLED and n != result.empty_message]
+    if not notices:
+        return
+    with st.container(key="notices"):
+        for n in notices:
+            if n == rec.YELP_UNAVAILABLE:
+                st.info(f"Local data mode · {rec.YELP_UNAVAILABLE} — ranked on cuisine and distance only.", icon="ℹ️")
+            else:
+                st.info(n, icon="ℹ️")
 
 
 def show_results(result: rec.RecommendationResult) -> None:
+    step(3, "See alternatives")
     if result.error:
-        st.warning(result.error)
+        empty_state("🤔", "We can't compare this one", result.error)
         return
     ref = result.reference
     if result.yelp_available and ref.get("data_fetched_at"):
-        st.caption(
-            f"Reference on Yelp: rating {fmt_missing(ref.get('rating'), lambda v: f'{v:g}')}, "
-            f"{fmt_missing(ref.get('review_count'), lambda v: f'{int(v):,}')} reviews, price "
-            f"{fmt_missing(ref.get('price_level'), lambda v: PRICE_LABELS.get(int(v), 'unavailable'))}."
-        )
-    for n in dict.fromkeys(result.notices):
-        st.info(n)
+        parts = [f"★ {ref['rating']:g}" if known(ref.get("rating")) else "rating n/a",
+                 f"{int(ref['review_count']):,} reviews" if known(ref.get("review_count")) else "reviews n/a",
+                 PRICE_LABELS.get(int(ref["price_level"]), "price n/a") if known(ref.get("price_level")) else "price n/a"]
+        st.caption("Your reference on Yelp: " + " · ".join(parts))
+    show_notices(result)
     if not result.results:
-        st.warning(result.empty_message or "No comparable restaurants found.")
+        empty_state("🔎", "No alternatives match these preferences",
+                    result.empty_message or "Try removing the cuisine or distance limit.")
         show_applied(result)
         return
-    st.subheader(f"{len(result.results)} alternatives")
+    st.markdown(f"**{len(result.results)} alternatives to {esc(ref['name'])}**")
     st.caption(result.disclaimer)
     left, right = st.columns([3, 2], gap="large")
     with left:
@@ -297,10 +372,9 @@ def show_results(result: rec.RecommendationResult) -> None:
 # ---------------------------------------------------------------- main
 
 def main() -> None:
-    st.title("🍽️ Manhattan Restaurant Alternatives")
     st.markdown(
-        "<p class='app-subtitle'>Name a restaurant you like and find comparable places nearby, "
-        "by cuisine, distance and (optionally) Yelp rating, reviews and price.</p>",
+        "<div class='ra-hero'><h1>Manhattan Restaurant Alternatives</h1>"
+        "<p>Name a restaurant you love and discover comparable places nearby, matched by cuisine and distance.</p></div>",
         unsafe_allow_html=True,
     )
 
@@ -310,31 +384,23 @@ def main() -> None:
     yelp_ready, yelp_reason = yelp_status(client)
 
     ref = choose_reference(matcher)
-    if ref is None:
-        st.sidebar.header("Filters")
-        st.sidebar.caption("Choose a reference restaurant to set filters.")
-        data_sources_panel(conn, client, yelp_ready, yelp_reason)
-        return
-    show_reference(ref)
-    if rec.is_unclassified(ref):
-        st.warning(rec.UNSPECIFIED_MESSAGE)
-        data_sources_panel(conn, client, yelp_ready, yelp_reason)
-        return
-
-    filters = filter_form(directory, ref, yelp_ready, yelp_reason)
-    if filters is not None:
-        # the ONLY place Yelp may be called
-        enricher = client.enrich if yelp_ready else None
-        with st.spinner("Finding alternatives..."):
-            st.session_state.result = rec.recommend(directory, ref["nyc_id"], filters, enricher)
-        st.session_state.result_ref = ref["nyc_id"]
+    if ref is not None:
+        show_reference(ref)
+        if rec.is_unclassified(ref):
+            empty_state("🤔", "We can't compare this one",
+                        rec.UNSPECIFIED_MESSAGE + " Try another restaurant.")
+        else:
+            filters = preferences(directory, ref, yelp_ready, yelp_reason)
+            if filters is not None:
+                # the ONLY place Yelp may be called
+                enricher = client.enrich if yelp_ready else None
+                with st.spinner("Finding alternatives..."):
+                    st.session_state.result = rec.recommend(directory, ref["nyc_id"], filters, enricher)
+                st.session_state.result_ref = ref["nyc_id"]
+            result = st.session_state.get("result")
+            if result is not None and st.session_state.get("result_ref") == ref["nyc_id"]:
+                show_results(result)
     data_sources_panel(conn, client, yelp_ready, yelp_reason)
-
-    result = st.session_state.get("result")
-    if result is not None and st.session_state.get("result_ref") == ref["nyc_id"]:
-        show_results(result)
-    else:
-        st.info("Set your filters in the sidebar, then click **Find alternatives**.")
 
 
 main()
