@@ -299,3 +299,22 @@ def test_explanation_omits_unknown_clauses():
     c = {"similarity_score": 0.6, "cuisine": "Pizza", "distance_km": None, "rating": None,
          "review_ratio": None, "price_gap": 0}
     assert rec.explain(c) == "Related cuisine (Pizza); same price level as your reference."
+
+
+def test_other_branches_of_same_name_never_returned():
+    d = make_dir(
+        row("R", "Don Angie", "Italian", "Italian/Pizza", 0.0, address="103 GREENWICH AVENUE"),
+        row("R2", "DON ANGIE!", "Italian", "Italian/Pizza", 0.001, address="235 WEST 12 STREET"),
+        row("O", "OTHER TRATTORIA", "Italian", "Italian/Pizza", 0.002),
+    )
+    # local mode / fallback
+    assert ids(recommend(d, "R")) == ["O"]
+    # Stage 2 path: the enricher never sees the other branch either
+    seen = {}
+
+    def enricher(ref, cands):
+        seen["ids"] = [c["restaurant_id"] for c in cands]
+        return {"R": yelp(4.5, 200, 2), "R2": yelp(4.5, 50, 2), "O": yelp(4.5, 50, 2)}
+
+    assert ids(recommend(d, "R", enricher=enricher, now=NOW)) == ["O"]
+    assert seen["ids"] == ["O"]

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from data_store import is_fresh
+from name_matching import normalize
 
 UNCLASSIFIED_FAMILY = "Other/Unclassified"
 UNSPECIFIED_MESSAGE = "This restaurant's cuisine isn't specified, so we can't find comparable restaurants."
@@ -218,10 +219,12 @@ def _candidate(reference: dict, row: dict, sim: float) -> dict:
 
 
 def stage1(directory, reference: dict, filters: Filters, limit: int = STAGE1_LIMIT) -> tuple[list[dict], list[str]]:
-    """Local candidates: exclude the reference, similarity > 0, distance limit,
+    """Local candidates: exclude the reference and other branches with the same
+    normalized name, similarity > 0, distance limit,
     required cuisine; ranked on local tiers; top `limit`."""
     notices = []
     ref_id = str(reference["nyc_id"])
+    ref_name = normalize(reference["name"])
     ref_has_coords = not (_missing(reference.get("lat")) or _missing(reference.get("lon")))
     use_distance = filters.max_distance_km is not None
     if use_distance and not ref_has_coords:
@@ -230,7 +233,8 @@ def stage1(directory, reference: dict, filters: Filters, limit: int = STAGE1_LIM
 
     out = []
     for row in directory.to_dict("records"):
-        if str(row["nyc_id"]) == ref_id:
+        # never return the reference or another branch of the same restaurant name
+        if str(row["nyc_id"]) == ref_id or (ref_name and normalize(row["name"]) == ref_name):
             continue
         sim = cuisine_similarity(reference, row)
         if sim <= 0:

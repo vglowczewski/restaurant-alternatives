@@ -33,7 +33,7 @@ A fuzzy score never selects a restaurant. Typos, "don angie", and "Don Angie NYC
 **Unclassified cuisines:** restaurants in the Other/Unclassified family (Fusion, Other, Not Listed/Not Applicable, Australian) are never recommended and cannot be used as a reference. If one is chosen as a reference, show: "This restaurant's cuisine isn't specified, so we can't find comparable restaurants."
 
 **Two-stage retrieval:**
-- Stage 1 (local): exclude the reference; keep similarity > 0; apply optional distance limit and optional required cuisine; sort by the tier key below (using only available tiers); take the top 40.
+- Stage 1 (local): exclude the reference and other branches of the same restaurant name; keep similarity > 0; apply optional distance limit and optional required cuisine; sort by the tier key below (using only available tiers); take the top 40.
 - Stage 2 (only on button click, only if a Yelp key is present and Yelp is enabled): fetch Yelp data for the reference and those 40 via mapped IDs, cache-first. Resolve a missing mapping with Business Match (name + address); skip an uncertain match and label it "not enriched". Hard cap of 45 Yelp calls per click. Then apply rating, review and price filters and return the top 10.
 - Without Yelp (no key, disabled, 429, auth error, or expired data): return Stage 1 results (top 10), show "Yelp data unavailable", and disable the rating/review/price controls with a visible explanation. Never show Yelp data older than 24 hours.
 
@@ -46,7 +46,7 @@ A fuzzy score never selects a restaurant. Typos, "don angie", and "Don Angie NYC
 4. -rating (missing last)
 5. exact distance_km (missing last)
 6. name A to Z
-A tier whose reference value is missing is inert for all candidates and is listed in tiers_skipped with the reason. Unknown values never count as a match, and unknown price is not cheap. The reference is never returned.
+A tier whose reference value is missing is inert for all candidates and is listed in tiers_skipped with the reason. Unknown values never count as a match, and unknown price is not cheap. The reference is never returned, and other branches of the same restaurant name are never returned.
 
 **Output per result:** restaurant_id, name, address, cuisine, shared_cuisine_label, similarity_score, rating, review_count, review_ratio, price_level, distance_km, distance_band, price_gap, tiers_used, tiers_skipped, data_fetched_at.
 **Explanation (template only):** "Same cuisine (Italian); 1.2 km away; has 15% as many reviews as your reference; price information is unavailable." Add clauses only for known values. Show: "Score reflects cuisine only, not menu, atmosphere, or quality."
