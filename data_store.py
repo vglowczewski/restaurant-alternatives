@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS yelp_cache (
     price        INTEGER,
     fetched_at   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS yelp_quota (
+    day   TEXT PRIMARY KEY,
+    calls INTEGER NOT NULL
+);
 """
 
 
@@ -175,3 +179,22 @@ def delete_expired(conn, now: datetime | None = None) -> int:
     cur = conn.execute("DELETE FROM yelp_cache WHERE fetched_at <= ?", (cutoff,))
     conn.commit()
     return cur.rowcount
+
+
+# Yelp quota (calls per UTC day; holds counts only, no Yelp content)
+
+def get_daily_calls(conn, now: datetime | None = None) -> int:
+    day = (now or utcnow()).astimezone(timezone.utc).date().isoformat()
+    row = conn.execute("SELECT calls FROM yelp_quota WHERE day = ?", (day,)).fetchone()
+    return int(row["calls"]) if row else 0
+
+
+def add_daily_call(conn, now: datetime | None = None) -> int:
+    day = (now or utcnow()).astimezone(timezone.utc).date().isoformat()
+    conn.execute(
+        "INSERT INTO yelp_quota (day, calls) VALUES (?, 1) "
+        "ON CONFLICT(day) DO UPDATE SET calls = calls + 1",
+        (day,),
+    )
+    conn.commit()
+    return get_daily_calls(conn, now)
