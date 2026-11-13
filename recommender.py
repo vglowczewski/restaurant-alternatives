@@ -354,8 +354,10 @@ def recommend(directory, reference_id: str, filters: Filters | None = None,
     if enricher is not None:
         try:
             records = enricher(reference, candidates)
-        except Exception:  # any Yelp failure falls back to local mode
+        except Exception as e:  # any Yelp failure falls back to local mode
             records = None
+            if getattr(e, "user_message", None):
+                notices.append(e.user_message)
 
     if records is None:
         notices += [YELP_UNAVAILABLE, YELP_FILTERS_DISABLED]

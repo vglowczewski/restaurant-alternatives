@@ -228,3 +228,51 @@ def test_refresh_stops_on_429(conn):
 def test_refresh_without_key(conn):
     report = rf.refresh(conn, ["y-a"], client=client(conn, FakeHttp(), settings=yc.YelpSettings(api_key=None)))
     assert report["failed"] == {"y-a": "Yelp key missing or Yelp disabled"}
+
+
+# ---------------------------------------------------------------- total budget
+
+def test_limit_defaults_and_env_override(monkeypatch):
+    monkeypatch.setattr(yc, "_secret", {"YELP_API_KEY": "k"}.get)
+    s = yc.YelpSettings.load()
+    assert (s.daily_limit, s.total_limit) == (300, 4500)
+    monkeypatch.setattr(yc, "_secret", {"YELP_API_KEY": "k", "YELP_DAILY_LIMIT": "7",
+                                        "YELP_TOTAL_LIMIT": "9"}.get)
+    s = yc.YelpSettings.load()
+    assert (s.daily_limit, s.total_limit) == (7, 9)
+    monkeypatch.setattr(yc, "_secret", {"YELP_API_KEY": "k", "YELP_TOTAL_LIMIT": "abc"}.get)
+    assert yc.YelpSettings.load().total_limit == 4500
+
+
+def test_total_counter_persists_across_days(conn):
+    ds.add_daily_call(conn, NOW)
+    ds.add_daily_call(conn, NOW + timedelta(days=1))
+    assert ds.get_total_calls(conn) == 2
+    assert ds.get_daily_calls(conn, NOW) == 1
+
+
+def test_total_budget_used_up_falls_back_with_message(conn):
+    settings = yc.YelpSettings(api_key="test-key", daily_limit=10_000, total_limit=5)
+    for _ in range(5):
+        ds.add_daily_call(conn, NOW - timedelta(days=3))
+    http = FakeHttp()
+    res = recommend(make_dir(3), "R", Filters(), enricher=client(conn, http, settings).enrich, now=NOW)
+    assert http.calls == []
+    assert not res.yelp_available and len(res.results) == 3
+    assert yc.BUDGET_USED_UP_MESSAGE in res.notices and YELP_UNAVAILABLE in res.notices
+
+
+def test_total_budget_reached_mid_click_stops_calls(conn):
+    settings = yc.YelpSettings(api_key="test-key", daily_limit=10_000, total_limit=3)
+    http = FakeHttp()
+    res = recommend(make_dir(5), "R", Filters(), enricher=client(conn, http, settings).enrich, now=NOW)
+    assert len(http.calls) == 3 and ds.get_total_calls(conn) == 3
+    assert not res.yelp_available and yc.BUDGET_USED_UP_MESSAGE in res.notices
+
+
+def test_refresh_stops_when_total_budget_used_up(conn):
+    settings = yc.YelpSettings(api_key="test-key", total_limit=1)
+    http = FakeHttp()
+    report = rf.refresh(conn, ["y-a", "y-b", "y-c"], client=client(conn, http, settings))
+    assert report["refreshed"] == ["y-a"] and len(http.calls) == 1
+    assert report["failed"]["y-b"] == yc.BUDGET_USED_UP_MESSAGE

@@ -181,7 +181,10 @@ def delete_expired(conn, now: datetime | None = None) -> int:
     return cur.rowcount
 
 
-# Yelp quota (calls per UTC day; holds counts only, no Yelp content)
+# Yelp quota (counts only, no Yelp content). One row per UTC day plus a
+# lifetime row whose day key is TOTAL_QUOTA_KEY.
+
+TOTAL_QUOTA_KEY = "total"
 
 def get_daily_calls(conn, now: datetime | None = None) -> int:
     day = (now or utcnow()).astimezone(timezone.utc).date().isoformat()
@@ -196,5 +199,16 @@ def add_daily_call(conn, now: datetime | None = None) -> int:
         "ON CONFLICT(day) DO UPDATE SET calls = calls + 1",
         (day,),
     )
+    conn.execute(
+        "INSERT INTO yelp_quota (day, calls) VALUES (?, 1) "
+        "ON CONFLICT(day) DO UPDATE SET calls = calls + 1",
+        (TOTAL_QUOTA_KEY,),
+    )
     conn.commit()
     return get_daily_calls(conn, now)
+
+
+def get_total_calls(conn) -> int:
+    """Lifetime Yelp calls recorded in this database."""
+    row = conn.execute("SELECT calls FROM yelp_quota WHERE day = ?", (TOTAL_QUOTA_KEY,)).fetchone()
+    return int(row["calls"]) if row else 0

@@ -55,6 +55,7 @@ A tier whose reference value is missing is inert for all candidates and is liste
 - Yelp content may be cached at most 24 hours (fetched_at on every record); only Yelp business IDs are permanent.
 - Call Yelp only on the Find alternatives click, never on keystrokes or Streamlit reruns. No bulk pre-fetching or scheduled calls.
 - All Yelp code lives in `yelp_client.py` (match, details, quota counting per session and day, handling of missing key, auth errors, 429), switchable by a YELP_ENABLED setting so the app runs without it.
+- Call limits (environment variables / Streamlit secrets, listed in `.env.example`): YELP_DAILY_LIMIT (default 300 calls per UTC day) and YELP_TOTAL_LIMIT (default 4500, a lifetime counter stored in the yelp_quota table). When the total limit is reached, make no further Yelp calls and fall back to local mode with the message "Yelp trial call budget used up".
 - `refresh.py` refreshes a FIXED set of IDs and deletes expired entries. Do not use Streamlit caching for Yelp data; expiry is checked in our own code.
 - Never put real Yelp data in tests, fixtures, prompts or Git. Use synthetic fixtures and mocked responses.
 - Yelp's terms for our use are UNVERIFIED (analysis, display, deployment). Put a clear warning in the README. The free trial is time-limited (about 30 days) and capped at about 5,000 calls.

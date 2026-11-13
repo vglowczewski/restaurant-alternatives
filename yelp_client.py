@@ -6,8 +6,10 @@
   record); only Yelp business IDs are stored permanently (mappings table).
 - Missing key, YELP_ENABLED=false, auth errors (401/403) and 429 make the
   enricher return None so the recommender falls back to local mode.
-- Hard cap of 45 Yelp calls per click; calls are also counted per session and
-  per UTC day (YELP_DAILY_LIMIT).
+- Hard cap of 45 Yelp calls per click; calls are also counted per session,
+  per UTC day (YELP_DAILY_LIMIT) and in total (YELP_TOTAL_LIMIT). When the
+  total budget is used up, Yelp is not called and the click runs in local mode
+  with BUDGET_USED_UP_MESSAGE.
 """
 from __future__ import annotations
 
@@ -22,7 +24,9 @@ from name_matching import normalize
 
 API_BASE = "https://api.yelp.com/v3"
 CALLS_PER_CLICK = 45
-DEFAULT_DAILY_LIMIT = 150  # free trial is ~5,000 calls over ~30 days
+DEFAULT_DAILY_LIMIT = 300
+DEFAULT_TOTAL_LIMIT = 4500  # free trial is capped at ~5,000 calls
+BUDGET_USED_UP_MESSAGE = "Yelp trial call budget used up"
 TIMEOUT_S = 10
 MATCH_NAME_MIN = 85  # business-match name similarity needed to accept a match
 NOT_ENRICHED = "not enriched"
@@ -45,6 +49,14 @@ class YelpAuthError(YelpUnavailable):
 
 class YelpRateLimited(YelpUnavailable):
     pass
+
+
+class YelpBudgetExhausted(YelpUnavailable):
+    """Lifetime call budget (YELP_TOTAL_LIMIT) reached: no more Yelp calls."""
+    user_message = BUDGET_USED_UP_MESSAGE
+
+    def __init__(self, msg: str = BUDGET_USED_UP_MESSAGE):
+        super().__init__(msg)
 
 
 class YelpCallCapReached(YelpError):
@@ -75,6 +87,7 @@ class YelpSettings:
     api_key: str | None
     enabled: bool = True
     daily_limit: int = DEFAULT_DAILY_LIMIT
+    total_limit: int = DEFAULT_TOTAL_LIMIT
 
     @property
     def usable(self) -> bool:
@@ -84,11 +97,16 @@ class YelpSettings:
     @classmethod
     def load(cls) -> "YelpSettings":
         enabled = (_secret("YELP_ENABLED") or "true").strip().lower() not in ("0", "false", "no", "off")
-        try:
-            daily = int(_secret("YELP_DAILY_LIMIT") or DEFAULT_DAILY_LIMIT)
-        except ValueError:
-            daily = DEFAULT_DAILY_LIMIT
-        return cls(api_key=_secret("YELP_API_KEY"), enabled=enabled, daily_limit=daily)
+        return cls(api_key=_secret("YELP_API_KEY"), enabled=enabled,
+                   daily_limit=_int_setting("YELP_DAILY_LIMIT", DEFAULT_DAILY_LIMIT),
+                   total_limit=_int_setting("YELP_TOTAL_LIMIT", DEFAULT_TOTAL_LIMIT))
+
+
+def _int_setting(name: str, default: int) -> int:
+    try:
+        return int(_secret(name) or default)
+    except ValueError:
+        return default
 
 
 def price_level(price) -> int | None:
@@ -120,6 +138,8 @@ class YelpClient:
         """One counted API call. Returns JSON, or None for 'not found'-like results."""
         if not self.settings.usable:
             raise YelpUnavailable("Yelp key missing or Yelp disabled")
+        if self.budget_used_up():
+            raise YelpBudgetExhausted()
         if self._budget is not None and self._budget <= 0:
             raise YelpCallCapReached(f"per-click cap of {CALLS_PER_CLICK} calls reached")
         if ds.get_daily_calls(self.conn, self.now()) >= self.settings.daily_limit:
@@ -144,6 +164,9 @@ class YelpClient:
         if resp.status_code >= 300:
             raise YelpError(f"Yelp error {resp.status_code}")
         return resp.json()
+
+    def budget_used_up(self) -> bool:
+        return ds.get_total_calls(self.conn) >= self.settings.total_limit
 
     # -- API wrappers ----------------------------------------------------
 
@@ -200,6 +223,8 @@ class YelpClient:
         Reference first, then candidates in rank order, until the per-click cap."""
         if not self.settings.usable:
             return None
+        if self.budget_used_up():
+            raise YelpBudgetExhausted()  # recommender falls back and shows the message
         self._budget = CALLS_PER_CLICK
         records: dict[str, dict] = {}
         rows = [dict(reference, nyc_id=str(reference["nyc_id"]))] + [
@@ -217,6 +242,8 @@ class YelpClient:
                     rec = None  # this restaurant stays "not enriched"
                 if rec:
                     records[row["nyc_id"]] = rec
+        except YelpBudgetExhausted:
+            raise
         except YelpUnavailable:
             return None
         finally:
