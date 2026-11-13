@@ -30,6 +30,8 @@ A fuzzy score never selects a restaurant. Typos, "don angie", and "Don Angie NYC
 ## 5. Recommendations (`recommender.py`)
 **Cuisine similarity:** same cuisine = 1.0; same cuisine_family but different cuisine = 0.6; otherwise excluded. Label: 1.0 "same cuisine", 0.6 "related cuisine". Rating, reviews, price and distance are never part of this score.
 
+**Unclassified cuisines:** restaurants in the Other/Unclassified family (Fusion, Other, Not Listed/Not Applicable, Australian) are never recommended and cannot be used as a reference. If one is chosen as a reference, show: "This restaurant's cuisine isn't specified, so we can't find comparable restaurants."
+
 **Two-stage retrieval:**
 - Stage 1 (local): exclude the reference; keep similarity > 0; apply optional distance limit and optional required cuisine; sort by the tier key below (using only available tiers); take the top 40.
 - Stage 2 (only on button click, only if a Yelp key is present and Yelp is enabled): fetch Yelp data for the reference and those 40 via mapped IDs, cache-first. Resolve a missing mapping with Business Match (name + address); skip an uncertain match and label it "not enriched". Hard cap of 45 Yelp calls per click. Then apply rating, review and price filters and return the top 10.
@@ -62,7 +64,7 @@ A tier whose reference value is missing is inert for all candidates and is liste
 Name search (local only) -> suggestions with addresses -> confirmed reference summary -> filters (cuisine, min rating, min reviews, relative-review slider, optional absolute max, price, distance) -> Find alternatives -> result cards (label, explanation, evidence, fetched-at) -> map when coordinates exist -> panel showing the filters actually applied -> clear "unavailable" labels. Use @st.cache_resource only for the directory and DB connection.
 
 ## 8. Tests (pytest; synthetic data and mocked Yelp only)
-Reference never returned; inclusive limits; percentage cap; conflicting thresholds; cuisine and family similarity; band boundaries; ordering within a band by distance then price; missing distance or price (candidate and reference); unknown never beats known; typo suggestions, no-match, duplicate branches; cache expiry and failed refresh; missing key, auth error and 429 fall back to local mode; Yelp call cap.
+Reference never returned; inclusive limits; percentage cap; conflicting thresholds; cuisine and family similarity; Other/Unclassified restaurants are never recommended and are rejected as a reference with the "cuisine isn't specified" message; band boundaries; ordering within a band by distance then price; missing distance or price (candidate and reference); unknown never beats known; typo suggestions, no-match, duplicate branches; cache expiry and failed refresh; missing key, auth error and 429 fall back to local mode; Yelp call cap.
 
 ## 9. Phases (stop after each with a summary of 5 lines or fewer)
 1. Skeleton and data: folders, pinned `requirements.txt` (streamlit, pandas, rapidfuzz, requests, python-dotenv, pytest), `.gitignore`, `.env.example`, `.streamlit/secrets.toml.example`, README stub, `scripts/build_directory.py`, run it, show the cuisine-family mapping for my review.

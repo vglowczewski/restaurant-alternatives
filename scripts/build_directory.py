@@ -54,7 +54,7 @@ FAMILIES: dict[str, list[str]] = {
         "Scandinavian", "English", "Irish", "Continental", "Haute Cuisine",
     ],
     "American": [
-        "American", "New American", "Californian", "Southwestern", "Australian",
+        "American", "New American", "Californian", "Southwestern",
         "Hamburgers", "Hotdogs", "Hotdogs/Pretzels", "Barbecue", "Steakhouse",
         "Chicken", "Soul Food", "Cajun", "Creole", "Creole/Cajun",
     ],
@@ -70,7 +70,7 @@ FAMILIES: dict[str, list[str]] = {
     "Vegetarian/Vegan": ["Vegetarian", "Vegan"],
     "Seafood": ["Seafood"],
     "Jewish/Kosher": ["Jewish/Kosher"],
-    "Other/Unclassified": ["Fusion", "Other", "Not Listed/Not Applicable"],
+    "Other/Unclassified": ["Fusion", "Other", "Not Listed/Not Applicable", "Australian"],
 }
 CUISINE_TO_FAMILY = {c: fam for fam, cuisines in FAMILIES.items() for c in cuisines}
 
