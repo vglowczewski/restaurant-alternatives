@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Runtime cache (SQLite, Yelp data) - never commit
+data/cache/
+*.sqlite
+*.sqlite3
+*.db
+
+# Raw downloads
+data/raw/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
