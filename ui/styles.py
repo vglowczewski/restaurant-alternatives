@@ -11,7 +11,7 @@ import html
 NAVY = "#1B2A41"
 MUTED = "#5A6B82"
 COLUMBIA = "#B9D9EB"
-COLUMBIA_DARK = "#3E7FAE"
+COLUMBIA_DARK = "#4A8DB7"
 PAGE = "#EAF4FA"
 CARD = "#F6FAFD"
 YELLOW = "#FFE8A3"
@@ -86,6 +86,10 @@ CSS = f"""
 .stButton button[kind="primary"]:hover, [data-testid="stFormSubmitButton"] button:hover {{
     background: {YELLOW}; border-color: {YELLOW_STRONG}; transform: translateY(-1px);
     box-shadow: 0 6px 16px rgba(27, 42, 65, 0.12); }}
+/* secondary buttons: keep navy text on hover/focus (accent-coloured text would be < 4.5:1) */
+.stButton button:hover, .stButton button:focus, [data-testid="stDownloadButton"] button:hover,
+[data-testid="stDownloadButton"] button:focus {{ color: {NAVY} !important; border-color: {COLUMBIA_DARK}; }}
+.stButton button:hover p, [data-testid="stDownloadButton"] button:hover p {{ color: {NAVY} !important; }}
 
 /* ---------- match choices: radio options rendered as cards ---------- */
 .st-key-match-cards [role="radiogroup"] {{ gap: 0.6rem; width: 100%; }}

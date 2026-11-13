@@ -9,6 +9,7 @@ Presentation (CSS, chips, icons) lives in ui/styles.py.
 from __future__ import annotations
 
 import io
+import math
 import re
 import sqlite3
 import tempfile
@@ -275,31 +276,68 @@ def result_card(i: int, c: dict, yelp_available: bool) -> None:
     )
 
 
-def show_map(ref: dict, results: list[dict]) -> None:
-    points = [{"lat": c["lat"], "lon": c["lon"], "label": f"{i}. {c['name']}",
-               "fill": [62, 127, 174, 220], "radius": 7}
-              for i, c in enumerate(results, 1) if known(c.get("lat")) and known(c.get("lon"))]
-    if known(ref.get("lat")) and known(ref.get("lon")):
-        points.append({"lat": ref["lat"], "lon": ref["lon"], "label": f"Your reference: {ref['name']}",
-                       "fill": [245, 200, 66, 255], "radius": 11})
-    if not points:
-        empty_state("🗺️", "No map for these results", "None of these restaurants has coordinates in the city data.")
-        return
-    df = pd.DataFrame(points)
-    span = max(df["lat"].max() - df["lat"].min(), df["lon"].max() - df["lon"].min())
-    zoom = 14 if span < 0.01 else 13 if span < 0.03 else 12 if span < 0.07 else 11
-    layer = pdk.Layer(
-        "ScatterplotLayer", df, get_position="[lon, lat]", get_fill_color="fill", get_radius="radius",
-        radius_units="pixels", stroked=True, get_line_color=[27, 42, 65, 200], line_width_min_pixels=1,
+MAP_HEIGHT_PX = 440
+MAP_WIDTH_PX = 460  # approximate width of the map column; used only to fit the zoom
+
+
+def fit_view(df: pd.DataFrame) -> pdk.ViewState:
+    """Centre on the bounding box and pick the largest zoom that shows every point.
+    A single point (or identical points) gets a default zoom of 14."""
+    lat_min, lat_max = float(df["lat"].min()), float(df["lat"].max())
+    lon_min, lon_max = float(df["lon"].min()), float(df["lon"].max())
+    lat_c, lon_c = (lat_min + lat_max) / 2, (lon_min + lon_max) / 2
+    lon_span = lon_max - lon_min
+    # Web Mercator: latitude degrees are stretched by 1/cos(lat)
+    lat_span = (lat_max - lat_min) / math.cos(math.radians(lat_c))
+    if lon_span < 1e-6 and lat_span < 1e-6:
+        return pdk.ViewState(latitude=lat_c, longitude=lon_c, zoom=14)
+    zooms = []
+    if lon_span >= 1e-6:
+        zooms.append(math.log2(MAP_WIDTH_PX * 360 / (256 * lon_span)))
+    if lat_span >= 1e-6:
+        zooms.append(math.log2(MAP_HEIGHT_PX * 360 / (256 * lat_span)))
+    zoom = min(zooms) - 0.4  # padding so edge markers are not clipped
+    return pdk.ViewState(latitude=lat_c, longitude=lon_c, zoom=max(9.0, min(16.0, zoom)))
+
+
+def _marker_layer(df: pd.DataFrame, fill: list[int], radius_px: int) -> pdk.Layer:
+    # NB: pydeck turns plain strings into JS expressions ("pixels" -> "@@=pixels",
+    # an undefined variable), so the unit must be a quoted string literal.
+    # Min/max pixel clamps keep markers small even if units were ignored.
+    return pdk.Layer(
+        "ScatterplotLayer", df, get_position="[lon, lat]",
+        get_fill_color=fill, get_radius=radius_px, radius_units="'pixels'",
+        radius_min_pixels=radius_px, radius_max_pixels=radius_px,
+        stroked=True, get_line_color=[27, 42, 65, 230], get_line_width=1,
+        line_width_units="'pixels'", line_width_min_pixels=1, line_width_max_pixels=2,
         pickable=True,
     )
+
+
+def show_map(ref: dict, results: list[dict]) -> None:
+    alts = pd.DataFrame([{"lat": float(c["lat"]), "lon": float(c["lon"]), "label": f"{i}. {c['name']}"}
+                         for i, c in enumerate(results, 1) if known(c.get("lat")) and known(c.get("lon"))],
+                        columns=["lat", "lon", "label"])
+    has_ref = known(ref.get("lat")) and known(ref.get("lon"))
+    refdf = pd.DataFrame([{"lat": float(ref["lat"]), "lon": float(ref["lon"]),
+                           "label": f"Your reference: {ref['name']}"}] if has_ref else [],
+                         columns=["lat", "lon", "label"])
+    if alts.empty and refdf.empty:
+        empty_state("🗺️", "No map for these results", "None of these restaurants has coordinates in the city data.")
+        return
+    layers = []
+    if not alts.empty:
+        layers.append(_marker_layer(alts, [74, 141, 183, 235], 7))     # blue alternatives
+    if not refdf.empty:
+        layers.append(_marker_layer(refdf, [245, 200, 66, 255], 10))  # yellow reference, drawn on top
     deck = pdk.Deck(
-        layers=[layer], map_provider="carto", map_style="light",
-        initial_view_state=pdk.ViewState(latitude=float(df["lat"].mean()), longitude=float(df["lon"].mean()), zoom=zoom),
+        layers=layers,
+        map_style=None,  # Streamlit picks its Carto basemap (no token needed)
+        initial_view_state=fit_view(pd.concat([alts, refdf], ignore_index=True)),
         tooltip={"text": "{label}"},
     )
-    st.pydeck_chart(deck, height=440)
-    st.caption("Yellow: your reference · Blue: alternatives. Places without coordinates are not shown.")
+    st.pydeck_chart(deck, height=MAP_HEIGHT_PX)
+    st.caption("Yellow: your reference. Blue: alternatives. Places without coordinates are not shown.")
 
 
 def _fmt_applied(key: str, v) -> str | None:
