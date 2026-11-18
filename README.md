@@ -4,12 +4,6 @@ A Streamlit app that suggests comparable Manhattan restaurants for a restaurant 
 It uses public NYC Open Data for the directory and, optionally, Yelp for rating, review
 count and price. Explanations are template-written from the data — there are **no LLM calls**.
 
-> **⚠️ Yelp warning.** Yelp's terms for this use (analysis, display, public deployment)
-> have **not been verified**. Check the Yelp Fusion API Terms of Use before enabling Yelp,
-> especially for a public deployment. The free trial is time-limited (about 30 days) and
-> capped at about 5,000 API calls. The app works fully without Yelp (local mode).
-> Never commit API keys, `.env`, `secrets.toml`, the SQLite cache, or any Yelp data.
-
 ## Setup (Windows, Python 3.12)
 
 ```powershell
